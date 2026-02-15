@@ -817,7 +817,7 @@ function SwingSilhouette({ phase, size = 200 }) {
 
 // ── Main App ────────────────────────────────────────────────
 export default function SwingIQ() {
-  const [tab, setTab] = useState("dashboard");
+  const [tab, setTab] = useState("guide");
   const [sessions, setSessions] = useState([]);
   const [currentResult, setCurrentResult] = useState(null);
   const [clubType, setClubType] = useState("driver");
@@ -1015,6 +1015,7 @@ export default function SwingIQ() {
 
   // ── Tab Nav ─────────────────────────────────────────────
   const tabs = [
+    { id: "guide", label: "Guide", icon: "?" },
     { id: "dashboard", label: "Home", icon: "⬡" },
     { id: "analysis", label: "Analysis", icon: "◎" },
     { id: "drills", label: "Drills", icon: "◆" },
@@ -1055,6 +1056,134 @@ export default function SwingIQ() {
           </button>
         ))}
       </div>
+
+      {/* ═══ GUIDE ═══ */}
+      {tab === "guide" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, animation: "fadeUp .4s ease" }}>
+
+          <Card glow style={{ textAlign: "center", padding: "28px 22px", background: `linear-gradient(170deg, ${C.card} 0%, ${C.surface} 100%)` }}>
+            <div style={{ fontSize: 40, marginBottom: 8 }}>🏌️</div>
+            <h2 style={{ fontFamily: F.display, fontSize: 22, fontWeight: 700, color: C.white, marginBottom: 4 }}>
+              How to Use Swing<span style={{ color: C.accent }}>IQ</span>
+            </h2>
+            <p style={{ fontFamily: F.body, fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
+              AI-powered swing analysis using your camera. No club needed.
+            </p>
+          </Card>
+
+          {/* Steps */}
+          {[
+            {
+              num: "1",
+              title: "Set Up Your Camera",
+              desc: "Place your phone or laptop so the camera can see your body from the thighs up. A side view (down-the-line) works best, but facing the camera works too. Good lighting helps.",
+              tip: "Prop your phone against something stable about 8-10 feet away at hip height.",
+            },
+            {
+              num: "2",
+              title: "Select Your Club",
+              desc: "On the Home tab, pick Driver, Iron, or Wedge. Each has different ideal angles that your swing is scored against. If you're just testing, Driver is a good default.",
+              tip: "You don't need an actual club — just mime the swing motion with your arms.",
+            },
+            {
+              num: "3",
+              title: "Start Camera & Calibrate",
+              desc: "Hit the green button on the Home tab. The app will turn on your camera and wait until it can see your body. A silhouette in the corner shows which parts are detected. Once your thighs, torso, and head are visible, a 3-second calibration starts automatically.",
+              tip: "Just stand naturally and stay still for the 3-second countdown.",
+            },
+            {
+              num: "4",
+              title: "Recording Starts Automatically",
+              desc: "After calibration, a 5-second countdown begins. Use this time to get into your stance. When it hits zero, recording starts. You can also tap 'Start Now' to skip the wait.",
+              tip: null,
+            },
+            {
+              num: "5",
+              title: "Perform Your Swing",
+              desc: "Do a full swing motion: setup position, backswing, reach the top, swing down through impact, and finish. The app tracks 6 phases by watching your shoulder rotation, hip turn, and elbow angles.",
+              tip: "Go at a natural pace. Recording auto-stops when it detects your finish position, or after 12 seconds.",
+            },
+            {
+              num: "6",
+              title: "Review Your Analysis",
+              desc: "You'll see an overall score (0-100), phase-by-phase breakdown, detected faults with explanations, and recommended drills. Tap any fault to see how to fix it.",
+              tip: null,
+            },
+          ].map((step) => (
+            <Card key={step.num}>
+              <div style={{ display: "flex", gap: 14 }}>
+                <div style={{
+                  width: 32, height: 32, borderRadius: "50%", flexShrink: 0,
+                  background: `${C.accent}18`, border: `1px solid ${C.accent}35`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontFamily: F.display, fontSize: 16, fontWeight: 700, color: C.accent,
+                }}>{step.num}</div>
+                <div style={{ flex: 1 }}>
+                  <h3 style={{ fontFamily: F.body, fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 6 }}>{step.title}</h3>
+                  <p style={{ fontFamily: F.body, fontSize: 12, color: C.text, lineHeight: 1.6 }}>{step.desc}</p>
+                  {step.tip && (
+                    <div style={{ marginTop: 8, padding: "8px 10px", background: C.surface, borderRadius: 8, border: `1px solid ${C.border}` }}>
+                      <span style={{ fontFamily: F.body, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
+                        <span style={{ color: C.gold, fontWeight: 600 }}>Tip: </span>{step.tip}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Card>
+          ))}
+
+          {/* Scoring explanation */}
+          <Card>
+            <h3 style={{ fontFamily: F.body, fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 10 }}>How Scoring Works</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {[
+                { range: "85-100", color: C.accent, label: "Excellent", desc: "Tour-level form for that phase" },
+                { range: "70-84", color: C.gold, label: "Good", desc: "Solid fundamentals, minor tweaks needed" },
+                { range: "55-69", color: "#e6a030", label: "Fair", desc: "Noticeable deviations from ideal" },
+                { range: "0-54", color: C.red, label: "Needs Work", desc: "Significant faults detected" },
+              ].map((tier) => (
+                <div key={tier.range} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }}>
+                  <span style={{ fontFamily: F.mono, fontSize: 11, fontWeight: 600, color: tier.color, width: 50 }}>{tier.range}</span>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: tier.color, flexShrink: 0 }} />
+                  <div>
+                    <span style={{ fontFamily: F.body, fontSize: 12, fontWeight: 600, color: C.white }}>{tier.label}</span>
+                    <span style={{ fontFamily: F.body, fontSize: 11, color: C.muted, marginLeft: 6 }}>{tier.desc}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p style={{ fontFamily: F.body, fontSize: 11, color: C.muted, marginTop: 10, lineHeight: 1.5 }}>
+              Impact is weighted heaviest (2x), followed by downswing (1.5x) and top (1.3x). Your overall score is the weighted average across all detected phases.
+            </p>
+          </Card>
+
+          {/* Other tabs */}
+          <Card>
+            <h3 style={{ fontFamily: F.body, fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 10 }}>Other Tabs</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {[
+                { icon: "◎", name: "Analysis", desc: "Detailed breakdown of your last swing — scores, angles vs ideal, faults, and priority fixes." },
+                { icon: "◆", name: "Drills", desc: "Practice drills recommended based on your detected faults. Each has a duration and difficulty level." },
+                { icon: "☷", name: "History", desc: "All your recorded sessions. Tap any to view its full analysis." },
+                { icon: "⧉", name: "Compare", desc: "Side-by-side comparison of any two sessions to track improvement." },
+              ].map((t) => (
+                <div key={t.name} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "6px 0" }}>
+                  <span style={{ fontSize: 14, width: 20, textAlign: "center", color: C.accent }}>{t.icon}</span>
+                  <div>
+                    <span style={{ fontFamily: F.body, fontSize: 12, fontWeight: 600, color: C.white }}>{t.name}</span>
+                    <p style={{ fontFamily: F.body, fontSize: 11, color: C.muted, lineHeight: 1.5, marginTop: 2 }}>{t.desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Btn onClick={() => setTab("dashboard")} style={{ width: "100%" }}>
+            Get Started
+          </Btn>
+        </div>
+      )}
 
       {/* ═══ DASHBOARD ═══ */}
       {tab === "dashboard" && (
