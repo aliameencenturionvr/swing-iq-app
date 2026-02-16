@@ -866,7 +866,7 @@ function VoiceBubble({ text, icon = "\u{1F50A}" }) {
 
 // ── Main App ────────────────────────────────────────────────
 export default function SwingIQ() {
-  const [tab, setTab] = useState("guide");
+  const [tab, setTab] = useState("dashboard");
   const [sessions, setSessions] = useState([]);
   const [currentResult, setCurrentResult] = useState(null);
   const [clubType, setClubType] = useState("driver");
@@ -1177,10 +1177,10 @@ export default function SwingIQ() {
 
   // ── Tab Nav ─────────────────────────────────────────────
   const tabs = [
-    { id: "guide", label: "Guide", icon: "\u{1F4D6}" },
     { id: "dashboard", label: "Home", icon: "⬡" },
     { id: "analysis", label: "Analysis", icon: "◎" },
     { id: "history", label: "History", icon: "☷" },
+    { id: "guide", label: "Guide", icon: "\u{1F4D6}" },
   ];
 
   return (
