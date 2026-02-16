@@ -895,11 +895,21 @@ export default function SwingIQ() {
   const say = useCallback((t, pri = false) => { setSpoken(t); gv().say(t, pri); }, []);
   const playDrill = useCallback((n) => { const d = DRILLS[n]; if (!d) return; gs().ready(); say(d.vg, true); }, [say]);
 
-  // Request camera permission explicitly
+  // Check if camera permission is already granted (cached by browser)
+  const checkCachedPermission = useCallback(async () => {
+    try {
+      const result = await navigator.permissions.query({ name: "camera" });
+      return result.state; // "granted", "denied", or "prompt"
+    } catch {
+      return "prompt"; // permissions API not supported
+    }
+  }, []);
+
+  // Request camera permission explicitly (retry button)
   const requestCamPermission = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      stream.getTracks().forEach(t => t.stop()); // release immediately — LiveCamera will re-acquire
+      stream.getTracks().forEach(t => t.stop());
       setCamPermission(true);
       setCameraActive(true);
     } catch {
@@ -907,21 +917,32 @@ export default function SwingIQ() {
     }
   }, [say]);
 
-  // When startCalibration is called, immediately request camera via getUserMedia (triggers browser popup)
+  // Start flow — use cached permission if available, otherwise prompt
   const startWithPermissionCheck = useCallback(async () => {
     setCalibrationState("waiting");
     calibrationFramesRef.current = [];
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      stream.getTracks().forEach(t => t.stop()); // release — LiveCamera will re-acquire
+    const state = await checkCachedPermission();
+    if (state === "granted") {
+      // Already granted — skip getUserMedia probe, go straight to camera
       setCamPermission(true);
       setCameraActive(true);
-    } catch {
-      // User declined — show manual "Allow Camera Access" button
+    } else if (state === "denied") {
+      // Previously denied — show retry button
       setCamPermission(false);
-      say("Camera permission was declined. Tap the button to try again.", true);
+      say("Camera permission was previously denied. Tap the button to allow access.", true);
+    } else {
+      // "prompt" — trigger browser permission popup
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        stream.getTracks().forEach(t => t.stop());
+        setCamPermission(true);
+        setCameraActive(true);
+      } catch {
+        setCamPermission(false);
+        say("Camera permission was declined. Tap the button to try again.", true);
+      }
     }
-  }, [say]);
+  }, [say, checkCachedPermission]);
 
   // Web Speech Recognition — listen for "start"
   useEffect(() => {
