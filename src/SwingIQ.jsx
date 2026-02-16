@@ -64,6 +64,8 @@ globalCSS.textContent = `
   @keyframes glow{0%,100%{filter:drop-shadow(0 0 6px rgba(200,255,120,.2))}50%{filter:drop-shadow(0 0 18px rgba(200,255,120,.5))}}
   @keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
   @keyframes recording{0%,100%{box-shadow:0 0 0 0 rgba(230,60,60,.4)}50%{box-shadow:0 0 0 12px rgba(230,60,60,0)}}
+  @keyframes wave{0%{height:4px}50%{height:var(--h)}100%{height:4px}}
+  @keyframes slideIn{from{opacity:0;transform:translateX(-20px)}to{opacity:1;transform:translateX(0)}}
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:#07090a}
   ::-webkit-scrollbar{width:5px}
@@ -121,30 +123,87 @@ const PHASE_LABELS = { setup: "Setup", backswing: "Backswing", top: "Top", downs
 
 // ── Fault Detection ─────────────────────────────────────────
 const FAULTS = [
-  { id: "ott", name: "Over the Top", check: (p) => p.downswing && p.downswing.shoulderRotation > 60, phase: "downswing", severity: "high", fix: "Focus on dropping hands inside. Try the slot drill — feel the right elbow tuck to your hip before rotating.", drill: "Slot Drill" },
-  { id: "earlyExt", name: "Early Extension", check: (p) => p.impact && p.impact.spineAngle < 22, phase: "impact", severity: "high", fix: "Maintain your spine angle through impact. Practice with your glutes against a chair — they should stay connected.", drill: "Chair Drill" },
-  { id: "sway", name: "Lateral Sway", check: (p) => p.backswing && p.backswing.hipRotation < 30, phase: "backswing", severity: "medium", fix: "Rotate hips rather than sliding. Feel pressure into the inside of your trail foot.", drill: "Headcover Under Foot" },
-  { id: "castEarly", name: "Casting / Early Release", check: (p) => p.downswing && p.downswing.wristAngle > 140, phase: "downswing", severity: "high", fix: "Maintain wrist hinge deeper into downswing. Feel like your hands lead the clubhead to the ball.", drill: "Pump Drill" },
-  { id: "chickenWing", name: "Chicken Wing", check: (p) => p.finish && p.finish.elbowAngle < 120, phase: "finish", severity: "medium", fix: "Allow the lead arm to extend fully through the ball. Practice slow swings feeling full extension.", drill: "Towel Extension Drill" },
-  { id: "reversePivot", name: "Reverse Pivot", check: (p) => p.top && p.top.spineAngle > 40, phase: "top", severity: "high", fix: "Keep your weight centered or slightly trail-side at the top. Your head should stay behind the ball.", drill: "Step Drill" },
-  { id: "lossPosture", name: "Loss of Posture", check: (p) => p.impact && Math.abs((p.impact.spineAngle || 30) - (p.setup?.spineAngle || 32)) > 10, phase: "impact", severity: "medium", fix: "Maintain consistent spine angle from setup through impact. Practice with alignment stick along your spine.", drill: "Spine Stick Drill" },
-  { id: "flatShould", name: "Flat Shoulder Turn", check: (p) => p.top && p.top.shoulderRotation < 75, phase: "top", severity: "low", fix: "Feel your lead shoulder working more under your chin. A fuller turn generates more power.", drill: "Cross Arms Turn" },
+  { id: "ott", name: "Over the Top", check: (p) => p.downswing && p.downswing.shoulderRotation > 60, phase: "downswing", severity: "high", fix: "Focus on dropping hands inside. Try the slot drill — feel the right elbow tuck to your hip before rotating.", drill: "Slot Drill", vf: "You're coming over the top. Focus on dropping your hands inside on the downswing." },
+  { id: "earlyExt", name: "Early Extension", check: (p) => p.impact && p.impact.spineAngle < 22, phase: "impact", severity: "high", fix: "Maintain your spine angle through impact. Practice with your glutes against a chair — they should stay connected.", drill: "Chair Drill", vf: "You're standing up too early at impact. Maintain your spine angle through the ball." },
+  { id: "sway", name: "Lateral Sway", check: (p) => p.backswing && p.backswing.hipRotation < 30, phase: "backswing", severity: "medium", fix: "Rotate hips rather than sliding. Feel pressure into the inside of your trail foot.", drill: "Headcover Under Foot", vf: "You're swaying instead of rotating. Focus on turning your hips, not sliding." },
+  { id: "castEarly", name: "Casting / Early Release", check: (p) => p.downswing && p.downswing.wristAngle > 140, phase: "downswing", severity: "high", fix: "Maintain wrist hinge deeper into downswing. Feel like your hands lead the clubhead to the ball.", drill: "Pump Drill", vf: "You're casting early. Keep your wrist hinge longer. Let your hands lead the club." },
+  { id: "chickenWing", name: "Chicken Wing", check: (p) => p.finish && p.finish.elbowAngle < 120, phase: "finish", severity: "medium", fix: "Allow the lead arm to extend fully through the ball. Practice slow swings feeling full extension.", drill: "Towel Extension Drill", vf: "Your lead arm is collapsing through impact. Work on full extension." },
+  { id: "reversePivot", name: "Reverse Pivot", check: (p) => p.top && p.top.spineAngle > 40, phase: "top", severity: "high", fix: "Keep your weight centered or slightly trail-side at the top. Your head should stay behind the ball.", drill: "Step Drill", vf: "You have a reverse pivot. Keep your weight behind the ball at the top." },
+  { id: "lossPosture", name: "Loss of Posture", check: (p) => p.impact && Math.abs((p.impact.spineAngle || 30) - (p.setup?.spineAngle || 32)) > 10, phase: "impact", severity: "medium", fix: "Maintain consistent spine angle from setup through impact. Practice with alignment stick along your spine.", drill: "Spine Stick Drill", vf: "You're losing posture through the swing. Keep spine angle consistent." },
+  { id: "flatShould", name: "Flat Shoulder Turn", check: (p) => p.top && p.top.shoulderRotation < 75, phase: "top", severity: "low", fix: "Feel your lead shoulder working more under your chin. A fuller turn generates more power.", drill: "Cross Arms Turn", vf: "Your shoulder turn is flat. Get your lead shoulder under your chin." },
 ];
 
 const DRILLS = {
-  "Slot Drill": { duration: "10 min", level: "Intermediate", desc: "Pause at top, then feel right elbow slot to trail hip before rotating body. Builds inside-out path." },
-  "Chair Drill": { duration: "10 min", level: "Beginner", desc: "Set up with your glutes touching a chair. Maintain contact through the swing to prevent early extension." },
-  "Headcover Under Foot": { duration: "10 min", level: "Beginner", desc: "Place headcover under trail foot outside edge. Maintain pressure to groove hip rotation over sway." },
-  "Pump Drill": { duration: "15 min", level: "Intermediate", desc: "Make 3 partial downswings to hip height keeping wrist hinge, then release on 4th. Trains lag." },
-  "Towel Extension Drill": { duration: "10 min", level: "Beginner", desc: "Tuck towel under both armpits. Swing without dropping it to maintain connection and prevent chicken wing." },
-  "Step Drill": { duration: "15 min", level: "Intermediate", desc: "Feet together at setup. Step toward target with lead foot to start downswing. Trains proper weight shift." },
-  "Spine Stick Drill": { duration: "10 min", level: "Advanced", desc: "Place alignment stick along spine at setup. Maintain contact through impact to lock in posture." },
-  "Cross Arms Turn": { duration: "10 min", level: "Beginner", desc: "Cross arms on chest, take your stance, and rotate. Feel lead shoulder work under chin for fuller turn." },
-  "9-to-3 Swings": { duration: "15 min", level: "Beginner", desc: "Half swings from 9 o'clock to 3 o'clock. Focus on center contact and controlling low point." },
-  "Pause at Top": { duration: "10 min", level: "Intermediate", desc: "Full backswing, hold for 2 seconds at top, then swing through. Improves transition tempo and sequencing." },
-  "Impact Bag": { duration: "15 min", level: "Advanced", desc: "Strike impact bag focusing on forward shaft lean, hands ahead, and body rotation through impact." },
-  "Alignment Gate": { duration: "15 min", level: "Intermediate", desc: "Place two tees just wider than clubhead on target line. Swing through the gate for path control." },
+  "Slot Drill": { duration: "10 min", level: "Intermediate", desc: "Pause at top, then feel right elbow slot to trail hip before rotating body. Builds inside-out path.", vg: "Slot Drill. Take your backswing. Pause at the top. Feel your trail elbow drop straight down to your hip. Then rotate through. Repeat ten times." },
+  "Chair Drill": { duration: "10 min", level: "Beginner", desc: "Set up with your glutes touching a chair. Maintain contact through the swing to prevent early extension.", vg: "Chair Drill. Place a chair behind you so your glutes just touch it. Swing while keeping contact with the chair. This prevents early extension." },
+  "Headcover Under Foot": { duration: "10 min", level: "Beginner", desc: "Place headcover under trail foot outside edge. Maintain pressure to groove hip rotation over sway.", vg: "Headcover drill. Place a headcover under the outside of your trail foot. Swing while keeping pressure on it. This trains hip rotation instead of sway." },
+  "Pump Drill": { duration: "15 min", level: "Intermediate", desc: "Make 3 partial downswings to hip height keeping wrist hinge, then release on 4th. Trains lag.", vg: "Pump Drill. Take your backswing. Make three small pumps to hip height keeping your wrist hinge. On the fourth, release fully through the ball." },
+  "Towel Extension Drill": { duration: "10 min", level: "Beginner", desc: "Tuck towel under both armpits. Swing without dropping it to maintain connection and prevent chicken wing.", vg: "Towel drill. Tuck a towel under both armpits. Make half swings without letting it drop. This keeps your arms connected." },
+  "Step Drill": { duration: "15 min", level: "Intermediate", desc: "Feet together at setup. Step toward target with lead foot to start downswing. Trains proper weight shift.", vg: "Step Drill. Start with feet together. Take your backswing. Step your lead foot toward the target to start down. This trains weight shift." },
+  "Spine Stick Drill": { duration: "10 min", level: "Advanced", desc: "Place alignment stick along spine at setup. Maintain contact through impact to lock in posture.", vg: "Spine Stick Drill. Hold an alignment stick along your spine. Swing while keeping the stick in contact with your back through impact." },
+  "Cross Arms Turn": { duration: "10 min", level: "Beginner", desc: "Cross arms on chest, take your stance, and rotate. Feel lead shoulder work under chin for fuller turn.", vg: "Cross Arms Turn. Cross your arms on your chest. Take your stance. Rotate back feeling your lead shoulder under your chin. Hold. Rotate through. Repeat." },
+  "9-to-3 Swings": { duration: "15 min", level: "Beginner", desc: "Half swings from 9 o'clock to 3 o'clock. Focus on center contact and controlling low point.", vg: "9 to 3 drill. Half swings. Hands to 9 o'clock back, 3 o'clock through. Focus on center face contact." },
+  "Pause at Top": { duration: "10 min", level: "Intermediate", desc: "Full backswing, hold for 2 seconds at top, then swing through. Improves transition tempo and sequencing.", vg: "Pause at Top. Full backswing. Hold two seconds. Feel weight in your trail side. Swing through. Improves transition." },
+  "Impact Bag": { duration: "15 min", level: "Advanced", desc: "Strike impact bag focusing on forward shaft lean, hands ahead, and body rotation through impact.", vg: "Impact Bag drill. Hit the bag with hands ahead of the clubhead. Feel forward shaft lean and body rotation through impact." },
+  "Alignment Gate": { duration: "15 min", level: "Intermediate", desc: "Place two tees just wider than clubhead on target line. Swing through the gate for path control.", vg: "Alignment Gate. Two tees wider than your clubhead on the target line. Swing through the gate. Trains your path." },
 };
+
+// ── Voice & Sound ───────────────────────────────────────────
+class Voice {
+  constructor() {
+    this.s = window.speechSynthesis; this.q = []; this.busy = false; this.on = true; this.v = null;
+    const p = () => {
+      const vs = this.s.getVoices();
+      this.v = vs.find(x => x.name.includes("Samantha"))
+        || vs.find(x => /google/i.test(x.name) && x.lang.startsWith("en"))
+        || vs.find(x => x.lang.startsWith("en-") && x.localService)
+        || vs.find(x => x.lang.startsWith("en")) || vs[0];
+    };
+    p(); if (this.s.onvoiceschanged !== undefined) this.s.onvoiceschanged = p;
+  }
+  say(t, pri = false) {
+    if (!this.on || !t) return;
+    if (pri) { this.s.cancel(); this.q = []; }
+    this.q.push(t); this._d();
+  }
+  _d() {
+    if (this.busy || !this.q.length) return; this.busy = true;
+    const u = new SpeechSynthesisUtterance(this.q.shift());
+    u.rate = 0.95; if (this.v) u.voice = this.v;
+    u.onend = () => { this.busy = false; this._d(); };
+    u.onerror = () => { this.busy = false; this._d(); };
+    this.s.speak(u);
+  }
+  stop() { this.s.cancel(); this.q = []; this.busy = false; }
+  toggle() { this.on = !this.on; if (!this.on) this.stop(); return this.on; }
+}
+
+class Sound {
+  constructor() { this.ctx = null; this.on = true; }
+  _e() {
+    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (this.ctx.state === "suspended") this.ctx.resume();
+  }
+  b(f = 880, d = 0.12, v = 0.3) {
+    if (!this.on) return; this._e();
+    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+    o.type = "sine"; o.frequency.value = f;
+    g.gain.setValueAtTime(v, this.ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + d);
+    o.connect(g); g.connect(this.ctx.destination); o.start(); o.stop(this.ctx.currentTime + d);
+  }
+  ready() { this.b(660, 0.15, 0.2); setTimeout(() => this.b(880, 0.15, 0.2), 180); }
+  swing() { this.b(1100, 0.08, 0.25); setTimeout(() => this.b(1320, 0.08, 0.25), 100); setTimeout(() => this.b(1540, 0.12, 0.3), 200); }
+  good() { this.b(523, 0.1, 0.2); setTimeout(() => this.b(659, 0.1, 0.2), 120); setTimeout(() => this.b(784, 0.2, 0.25), 240); }
+  great() { this.b(523, 0.08, 0.2); setTimeout(() => this.b(659, 0.08, 0.2), 100); setTimeout(() => this.b(784, 0.08, 0.2), 200); setTimeout(() => this.b(1047, 0.25, 0.3), 300); }
+  alert() { this.b(440, 0.15, 0.2); setTimeout(() => this.b(370, 0.2, 0.2), 180); }
+  tick() { this.b(1000, 0.04, 0.15); }
+  phase() { this.b(700, 0.06, 0.15); }
+}
+
+let _voice = null, _sound = null;
+function gv() { if (!_voice) _voice = new Voice(); return _voice; }
+function gs() { if (!_sound) _sound = new Sound(); return _sound; }
 
 // ── MediaPipe Pose Loader (tasks-vision API) ─────────────────
 const VISION_WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm";
@@ -815,6 +874,27 @@ function SwingSilhouette({ phase, size = 200 }) {
   return <canvas ref={canvasRef} style={{ width: size, height: size }} />;
 }
 
+// ── Wave & Voice Bubble ─────────────────────────────────────
+function Wave({ on }) {
+  const bars = useMemo(() => Array.from({ length: 24 }, () => ({ dur: 0.4 + Math.random() * 0.5, h: 8 + Math.random() * 28 })), []);
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 3, height: 40 }}>
+      {bars.map((b, i) => (
+        <div key={i} style={{ width: 3, borderRadius: 2, background: on ? C.accent : C.muted, height: on ? undefined : 4, animation: on ? `wave ${b.dur}s ease-in-out infinite alternate` : "none", animationDelay: `${i * 0.04}s`, "--h": `${b.h}px` }} />
+      ))}
+    </div>
+  );
+}
+
+function VoiceBubble({ text, icon = "\u{1F50A}" }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: `${C.accent}08`, border: `1px solid ${C.accent}15`, borderRadius: 10, animation: "slideIn .3s ease" }}>
+      <span style={{ fontSize: 18 }}>{icon}</span>
+      <span style={{ fontFamily: F.body, fontSize: 13, color: C.text, fontWeight: 500, fontStyle: "italic" }}>"{text}"</span>
+    </div>
+  );
+}
+
 // ── Main App ────────────────────────────────────────────────
 export default function SwingIQ() {
   const [tab, setTab] = useState("guide");
@@ -822,7 +902,7 @@ export default function SwingIQ() {
   const [currentResult, setCurrentResult] = useState(null);
   const [clubType, setClubType] = useState("driver");
   const [selectedPhase, setSelectedPhase] = useState("setup");
-  const [selectedDrill, setSelectedDrill] = useState(null);
+
   const [compareIdx, setCompareIdx] = useState([0, 1]);
   const [simSkill, setSimSkill] = useState(0.72);
   const [cameraActive, setCameraActive] = useState(false);
@@ -839,6 +919,14 @@ export default function SwingIQ() {
   const phaseDetectorRef = useRef(createPhaseDetector());
   const recordStartRef = useRef(0);
   const calibrationFramesRef = useRef([]);
+  const prevPhaseRef = useRef(null);
+  const [spoken, setSpoken] = useState("");
+  const [vOn, setVO] = useState(true);
+  const [sOn, setSO] = useState(true);
+  const [activeDrill, setActiveDrill] = useState(null);
+
+  const say = useCallback((t, pri = false) => { setSpoken(t); gv().say(t, pri); }, []);
+  const playDrill = useCallback((n) => { const d = DRILLS[n]; if (!d) return; setActiveDrill(n); gs().ready(); say(d.vg, true); }, [say]);
 
   // Handle incoming pose landmarks from the camera
   const handlePoseFrame = useCallback((landmarks) => {
@@ -857,6 +945,10 @@ export default function SwingIQ() {
     }
 
     const phase = phaseDetectorRef.current.detect(angles);
+    if (phase !== prevPhaseRef.current && calibrationState === "recording") {
+      prevPhaseRef.current = phase;
+      gs().phase();
+    }
     setLivePhase(phase);
     setLiveAngles(angles);
 
@@ -887,6 +979,11 @@ export default function SwingIQ() {
     setCalibrationState("waiting"); // wait for full body visibility before countdown
   }, []);
 
+  const handleCameraReady = useCallback(() => {
+    gs().ready();
+    say(`Starting session with ${clubType}. Get into your address position. Make sure your full body is visible.`, true);
+  }, [clubType, say]);
+
   // Auto-transition: waiting → calibrating once full body is visible
   useEffect(() => {
     if (calibrationState !== "waiting" || !poseDetected) return;
@@ -902,6 +999,7 @@ export default function SwingIQ() {
     let remaining = 3;
     const interval = setInterval(() => {
       remaining--;
+      gs().tick();
       setCalibrationCountdown(remaining);
       if (remaining <= 0) {
         clearInterval(interval);
@@ -927,13 +1025,18 @@ export default function SwingIQ() {
     phaseDetectorRef.current.reset();
     framesRef.current = [];
     recordStartRef.current = Date.now();
+    prevPhaseRef.current = null;
     setRecordCountdown(0);
+    gs().swing();
+    say("Swing now.", true);
     setCalibrationState("recording");
-  }, []);
+  }, [say]);
 
   // Auto-start recording 5 seconds after calibration completes
   useEffect(() => {
     if (calibrationState !== "ready") { setRecordCountdown(0); return; }
+    gs().tick();
+    say("Good. Hold your setup. Recording starts in 5 seconds.", true);
 
     let remaining = 5;
     setRecordCountdown(remaining);
@@ -951,21 +1054,38 @@ export default function SwingIQ() {
 
   const finishRecording = useCallback(() => {
     if (framesRef.current.length < 5) {
-      // Not enough data — go back to ready to auto-record again
       setCalibrationState("ready");
       return;
     }
 
+    say("Analyzing your swing.", true);
     const result = analyzeSwing(framesRef.current, clubType);
     setCurrentResult(result);
     setSessions(prev => [result, ...prev].slice(0, 50));
     setTab("analysis");
     setCameraActive(false);
     setCalibrationState("idle");
+
+    const grade = result.overallScore >= 85 ? "Excellent" : result.overallScore >= 75 ? "Good" : result.overallScore >= 60 ? "Needs work" : "Let's improve this";
+    if (result.overallScore >= 85) gs().great();
+    else if (result.overallScore >= 70) gs().good();
+    else gs().alert();
+
+    setTimeout(() => say(`Score: ${result.overallScore}. ${grade}.`), 500);
+    if (result.faults.length > 0) {
+      setTimeout(() => say(result.faults[0].vf), 3500);
+    } else {
+      setTimeout(() => say("Clean swing. No major faults detected."), 3500);
+    }
+    if (result.tempo && result.tempo !== "—") {
+      setTimeout(() => say(`Tempo was ${result.tempo}.`), 6500);
+    }
+
     if (window.swingIQ?.onAnalysisComplete) window.swingIQ.onAnalysisComplete(result);
-  }, [clubType]);
+  }, [clubType, say]);
 
   const cancelCamera = useCallback(() => {
+    gv().stop();
     setCameraActive(false);
     setCalibrationState("idle");
     setCalibrationBaseline(null);
@@ -1031,14 +1151,18 @@ export default function SwingIQ() {
           <h1 style={{ fontFamily: F.display, fontSize: 28, fontWeight: 700, color: C.white, letterSpacing: -0.5 }}>
             Swing<span style={{ color: C.accent }}>IQ</span>
           </h1>
-          <p style={{ fontFamily: F.body, fontSize: 11, color: C.muted, fontWeight: 400, letterSpacing: 1.5, textTransform: "uppercase", marginTop: 2 }}>AI Swing Analysis</p>
+          <p style={{ fontFamily: F.body, fontSize: 11, color: C.muted, fontWeight: 400, letterSpacing: 1.5, textTransform: "uppercase", marginTop: 2 }}>Voice-Guided Training</p>
         </div>
-        {calibrationState === "recording" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", background: `${C.red}18`, border: `1px solid ${C.red}30`, borderRadius: 20, animation: "recording 1.5s infinite" }}>
-            <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.red, animation: "pulse 1s infinite" }} />
-            <span style={{ fontFamily: F.mono, fontSize: 11, color: C.red, fontWeight: 600 }}>RECORDING</span>
-          </div>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {calibrationState === "recording" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", background: `${C.red}18`, border: `1px solid ${C.red}30`, borderRadius: 20, animation: "recording 1.5s infinite" }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.red, animation: "pulse 1s infinite" }} />
+              <span style={{ fontFamily: F.mono, fontSize: 11, color: C.red, fontWeight: 600 }}>RECORDING</span>
+            </div>
+          )}
+          <button onClick={() => { const o = gv().toggle(); setVO(o); }} style={{ width: 36, height: 36, borderRadius: 10, border: `1px solid ${C.border}`, background: vOn ? `${C.accent}14` : C.surface, color: vOn ? C.accent : C.muted, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>{vOn ? "\u{1F50A}" : "\u{1F507}"}</button>
+          <button onClick={() => { gs().on = !gs().on; setSO(gs().on); }} style={{ width: 36, height: 36, borderRadius: 10, border: `1px solid ${C.border}`, background: sOn ? `${C.accent}14` : C.surface, color: sOn ? C.accent : C.muted, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>{"\u266A"}</button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -1234,7 +1358,7 @@ export default function SwingIQ() {
                   <LiveCamera
                     isActive={cameraActive}
                     onFrame={handlePoseFrame}
-                    onReady={() => {}}
+                    onReady={handleCameraReady}
                     onError={() => {}}
                   />
                   {/* Body visibility silhouette overlay */}
@@ -1448,6 +1572,8 @@ export default function SwingIQ() {
             </>
           )}
 
+          {spoken && <VoiceBubble text={spoken} />}
+
           {sessions.length === 0 && (
             <Card style={{ textAlign: "center", padding: 40 }}>
               <div style={{ fontSize: 40, marginBottom: 12, animation: "bounce 2s ease infinite" }}>🏌️</div>
@@ -1470,6 +1596,7 @@ export default function SwingIQ() {
               {currentResult.tempo !== "—" && <Badge text={`Tempo ${currentResult.tempo}`} color={C.gold} />}
               {currentResult.maxSpeed && <Badge text={currentResult.maxSpeed} color={C.cyan} />}
             </div>
+            <button onClick={() => { const g = currentResult.overallScore >= 85 ? "Excellent" : currentResult.overallScore >= 75 ? "Good" : "Needs work"; say(`Score: ${currentResult.overallScore}. ${g}.${currentResult.faults[0] ? " " + currentResult.faults[0].vf : " No major faults."}`, true); }} style={{ marginTop: 14, padding: "8px 20px", borderRadius: 8, border: `1px solid ${C.accent}30`, background: `${C.accent}10`, color: C.accent, fontFamily: F.body, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{"\u{1F50A}"} Hear Analysis Again</button>
           </Card>
 
           {/* Phase Breakdown */}
@@ -1534,12 +1661,10 @@ export default function SwingIQ() {
                       <Badge text={PHASE_LABELS[f.phase]} small color={C.text} />
                     </div>
                     <p style={{ fontFamily: F.body, fontSize: 12, color: C.text, lineHeight: 1.5 }}>{f.fix}</p>
-                    {f.drill && (
-                      <button onClick={() => { setSelectedDrill(f.drill); setTab("drills"); }} style={{
-                        marginTop: 8, padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.accent}30`,
-                        background: `${C.accent}10`, color: C.accent, fontFamily: F.body, fontSize: 11, fontWeight: 600, cursor: "pointer",
-                      }}>→ {f.drill}</button>
-                    )}
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      {f.vf && <button onClick={() => say(f.vf, true)} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontFamily: F.body, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{"\u{1F50A}"} Hear Fix</button>}
+                      {f.drill && <button onClick={() => { setActiveDrill(f.drill); setTab("drills"); playDrill(f.drill); }} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.accent}30`, background: `${C.accent}10`, color: C.accent, fontFamily: F.body, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{"\u25C6"} Start Drill</button>}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1567,16 +1692,27 @@ export default function SwingIQ() {
       {/* ═══ DRILLS ═══ */}
       {tab === "drills" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14, animation: "fadeUp .4s ease" }}>
-          <div style={{ fontFamily: F.body, fontSize: 13, fontWeight: 700, color: C.white }}>
-            {currentResult?.recommendedDrills?.length ? "Recommended for You" : "All Drills"}
-          </div>
+          {/* Active drill player */}
+          {activeDrill && DRILLS[activeDrill] && (
+            <Card style={{ border: `1px solid ${C.accent}30`, boxShadow: `0 0 24px ${C.accentGlow}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <span style={{ fontFamily: F.body, fontSize: 10, color: C.accent, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" }}>Now Playing</span>
+                <button onClick={() => { gv().stop(); setActiveDrill(null); }} style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontFamily: F.body, fontSize: 10, cursor: "pointer" }}>Stop</button>
+              </div>
+              <span style={{ fontFamily: F.body, fontSize: 18, color: C.white, fontWeight: 700, display: "block", marginBottom: 6 }}>{activeDrill}</span>
+              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}><Badge text={DRILLS[activeDrill].duration} small color={C.cyan} /><Badge text={DRILLS[activeDrill].level} small color={C.gold} /></div>
+              <Wave on={true} />
+              <p style={{ fontFamily: F.body, fontSize: 13, color: C.text, lineHeight: 1.6, marginTop: 10 }}>{DRILLS[activeDrill].desc}</p>
+              <button onClick={() => playDrill(activeDrill)} style={{ marginTop: 12, width: "100%", padding: "10px", borderRadius: 8, border: `1px solid ${C.accent}30`, background: `${C.accent}10`, color: C.accent, fontFamily: F.body, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>{"\u{1F50A}"} Replay Voice Guide</button>
+            </Card>
+          )}
 
+          {currentResult?.recommendedDrills?.length > 0 && <span style={{ fontFamily: F.body, fontSize: 13, fontWeight: 700, color: C.white }}>Recommended</span>}
           {currentResult?.recommendedDrills?.map((drillName, i) => {
             const d = DRILLS[drillName];
             if (!d) return null;
             return (
-              <Card key={i} hover onClick={() => setSelectedDrill(selectedDrill === drillName ? null : drillName)}
-                style={selectedDrill === drillName ? { border: `1px solid ${C.accent}40` } : {}}>
+              <Card key={i}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
                     <span style={{ fontFamily: F.body, fontSize: 14, color: C.white, fontWeight: 600 }}>{drillName}</span>
@@ -1585,29 +1721,26 @@ export default function SwingIQ() {
                       <Badge text={d.level} small color={d.level === "Advanced" ? C.gold : d.level === "Intermediate" ? C.accent : C.text} />
                     </div>
                   </div>
-                  <span style={{ fontFamily: F.body, fontSize: 11, color: C.accent, fontWeight: 600 }}>★ Recommended</span>
+                  <button onClick={() => playDrill(drillName)} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: C.accent, color: C.bg, fontFamily: F.body, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{"\u{1F50A}"} Start</button>
                 </div>
-                {selectedDrill === drillName && (
-                  <p style={{ fontFamily: F.body, fontSize: 13, color: C.text, marginTop: 10, lineHeight: 1.6, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>{d.desc}</p>
-                )}
               </Card>
             );
           })}
 
-          <div style={{ fontFamily: F.body, fontSize: 13, fontWeight: 700, color: C.white, marginTop: 8 }}>All Drills</div>
+          <span style={{ fontFamily: F.body, fontSize: 13, fontWeight: 700, color: C.white, marginTop: 8 }}>All Drills</span>
           {Object.entries(DRILLS).map(([name, d]) => (
-            <Card key={name} hover onClick={() => setSelectedDrill(selectedDrill === name ? null : name)}
-              style={selectedDrill === name ? { border: `1px solid ${C.accent}40` } : {}}>
+            <Card key={name}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontFamily: F.body, fontSize: 14, color: C.white, fontWeight: 600 }}>{name}</span>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <Badge text={d.duration} small color={C.cyan} />
-                  <Badge text={d.level} small color={d.level === "Advanced" ? C.gold : d.level === "Intermediate" ? C.accent : C.text} />
+                <div style={{ flex: 1 }}>
+                  <span style={{ fontFamily: F.body, fontSize: 14, color: C.white, fontWeight: 600 }}>{name}</span>
+                  <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                    <Badge text={d.duration} small color={C.cyan} />
+                    <Badge text={d.level} small color={d.level === "Advanced" ? C.gold : d.level === "Intermediate" ? C.accent : C.text} />
+                  </div>
+                  <p style={{ fontFamily: F.body, fontSize: 12, color: C.muted, marginTop: 6, lineHeight: 1.4 }}>{d.desc}</p>
                 </div>
+                <button onClick={() => playDrill(name)} style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.borderMid}`, background: C.card, color: C.accent, fontFamily: F.body, fontSize: 11, fontWeight: 700, cursor: "pointer", flexShrink: 0, marginLeft: 10 }}>{"\u{1F50A}"}</button>
               </div>
-              {selectedDrill === name && (
-                <p style={{ fontFamily: F.body, fontSize: 13, color: C.text, marginTop: 10, lineHeight: 1.6, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>{d.desc}</p>
-              )}
             </Card>
           ))}
         </div>
@@ -1646,6 +1779,7 @@ export default function SwingIQ() {
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                     <span style={{ fontFamily: F.mono, fontSize: 10, color: C.muted }}>{new Date(s.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                     {s.faults[0] && <Badge text={s.faults[0].name} small color={s.faults[0].severity === "high" ? C.red : C.gold} />}
+                    <button onClick={(e) => { e.stopPropagation(); say(`Score ${s.overallScore}. ${s.faults[0] ? s.faults[0].vf : "No faults."}`, true); }} style={{ padding: "3px 8px", borderRadius: 4, border: `1px solid ${C.border}`, background: "transparent", color: C.text, fontSize: 10, cursor: "pointer" }}>{"\u{1F50A}"}</button>
                   </div>
                 </div>
               </Card>
@@ -1743,11 +1877,19 @@ export default function SwingIQ() {
       )}
 
       {/* Footer */}
-      <div style={{ marginTop: 40, padding: "20px 0", borderTop: `1px solid ${C.border}`, textAlign: "center" }}>
+      <div style={{ marginTop: 40, padding: "20px 0 60px", borderTop: `1px solid ${C.border}`, textAlign: "center" }}>
         <span style={{ fontFamily: F.body, fontSize: 10, color: C.muted }}>
-          SwingIQ — CV Integration via window.swingIQ API
+          SwingIQ — Voice-Guided Training
         </span>
       </div>
+
+      {/* Voice bar */}
+      {spoken && (
+        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "10px 16px", background: `${C.surface}ee`, borderTop: `1px solid ${C.border}`, backdropFilter: "blur(10px)", display: "flex", alignItems: "center", gap: 10, justifyContent: "center", zIndex: 50 }}>
+          <span style={{ color: C.accent, fontSize: 14 }}>{"\u{1F50A}"}</span>
+          <span style={{ fontFamily: F.body, fontSize: 12, color: C.text, fontStyle: "italic", maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>"{spoken}"</span>
+        </div>
+      )}
     </div>
   );
 }
