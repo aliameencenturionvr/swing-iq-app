@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 
 /*
@@ -42,7 +42,6 @@ import { PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
  ║  window.swingIQ.onAnalysisComplete = (result) => {}          ║
  ║    → callback with full analysis result                      ║
  ║                                                              ║
- ║  DEMO MODE: Use without CV by clicking "Simulate Swing"      ║
  ╚══════════════════════════════════════════════════════════════╝
 */
 
@@ -646,25 +645,6 @@ function analyzeSwing(frames, clubType = "driver") {
   };
 }
 
-// ── Simulate a swing (demo mode) ───────────────────────────
-function simulateSwing(clubType = "driver", skill = 0.7) {
-  const ideal = IDEAL_ANGLES[clubType] || IDEAL_ANGLES.driver;
-  const frames = [];
-  let t = 0;
-  for (const phase of PHASE_ORDER) {
-    const numFrames = phase === "downswing" ? 8 : phase === "impact" ? 3 : 12;
-    for (let i = 0; i < numFrames; i++) {
-      const angles = {};
-      for (const [k, v] of Object.entries(ideal[phase])) {
-        const variance = v * (1 - skill) * (0.3 + Math.random() * 0.4);
-        angles[k] = v + (Math.random() > 0.5 ? variance : -variance);
-      }
-      frames.push({ timestamp: t, phase, angles, clubData: phase === "impact" ? { clubheadSpeed: clubType === "driver" ? 95 + Math.random() * 25 : 70 + Math.random() * 20, shaftAngle: -4 + Math.random() * 8, swingPlane: 42 + Math.random() * 8 } : null });
-      t += phase === "downswing" ? 15 : phase === "impact" ? 8 : 40;
-    }
-  }
-  return frames;
-}
 
 // ── Components ──────────────────────────────────────────────
 
@@ -874,18 +854,7 @@ function SwingSilhouette({ phase, size = 200 }) {
   return <canvas ref={canvasRef} style={{ width: size, height: size }} />;
 }
 
-// ── Wave & Voice Bubble ─────────────────────────────────────
-function Wave({ on }) {
-  const bars = useMemo(() => Array.from({ length: 24 }, () => ({ dur: 0.4 + Math.random() * 0.5, h: 8 + Math.random() * 28 })), []);
-  return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 3, height: 40 }}>
-      {bars.map((b, i) => (
-        <div key={i} style={{ width: 3, borderRadius: 2, background: on ? C.accent : C.muted, height: on ? undefined : 4, animation: on ? `wave ${b.dur}s ease-in-out infinite alternate` : "none", animationDelay: `${i * 0.04}s`, "--h": `${b.h}px` }} />
-      ))}
-    </div>
-  );
-}
-
+// ── Voice Bubble ─────────────────────────────────────────────
 function VoiceBubble({ text, icon = "\u{1F50A}" }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: `${C.accent}08`, border: `1px solid ${C.accent}15`, borderRadius: 10, animation: "slideIn .3s ease" }}>
@@ -903,12 +872,9 @@ export default function SwingIQ() {
   const [clubType, setClubType] = useState("driver");
   const [selectedPhase, setSelectedPhase] = useState("setup");
 
-  const [compareIdx, setCompareIdx] = useState([0, 1]);
-  const [simSkill, setSimSkill] = useState(0.72);
   const [cameraActive, setCameraActive] = useState(false);
   const [livePhase, setLivePhase] = useState("setup");
   const [liveAngles, setLiveAngles] = useState(null);
-  const [cvMode, setCvMode] = useState(false); // true = camera, false = simulate
   const [rightHanded, setRightHanded] = useState(true);
   const [calibrationState, setCalibrationState] = useState("idle"); // idle | waiting | calibrating | ready | recording
   const [calibrationCountdown, setCalibrationCountdown] = useState(0);
@@ -923,10 +889,96 @@ export default function SwingIQ() {
   const [spoken, setSpoken] = useState("");
   const [vOn, setVO] = useState(true);
   const [sOn, setSO] = useState(true);
-  const [activeDrill, setActiveDrill] = useState(null);
+  const [camPermission, setCamPermission] = useState(null); // null = not asked, true = granted, false = denied
+  const recognitionRef = useRef(null);
 
   const say = useCallback((t, pri = false) => { setSpoken(t); gv().say(t, pri); }, []);
-  const playDrill = useCallback((n) => { const d = DRILLS[n]; if (!d) return; setActiveDrill(n); gs().ready(); say(d.vg, true); }, [say]);
+  const playDrill = useCallback((n) => { const d = DRILLS[n]; if (!d) return; gs().ready(); say(d.vg, true); }, [say]);
+
+  // Request camera permission explicitly
+  const requestCamPermission = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      stream.getTracks().forEach(t => t.stop()); // release immediately — LiveCamera will re-acquire
+      setCamPermission(true);
+      setCameraActive(true);
+    } catch {
+      say("Camera permission was denied. Please allow camera access in your browser settings.", true);
+    }
+  }, [say]);
+
+  // When startCalibration is called, immediately request camera via getUserMedia (triggers browser popup)
+  const startWithPermissionCheck = useCallback(async () => {
+    setCalibrationState("waiting");
+    calibrationFramesRef.current = [];
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      stream.getTracks().forEach(t => t.stop()); // release — LiveCamera will re-acquire
+      setCamPermission(true);
+      setCameraActive(true);
+    } catch {
+      // User declined — show manual "Allow Camera Access" button
+      setCamPermission(false);
+      say("Camera permission was declined. Tap the button to try again.", true);
+    }
+  }, [say]);
+
+  // Web Speech Recognition — listen for "start"
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition || calibrationState !== "idle") return;
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false; // Safari crashes with continuous:true — use manual restart
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    recognitionRef.current = recognition;
+
+    let cancelled = false;
+    let restartAttempts = 0;
+    const MAX_RESTARTS = 50;
+
+    recognition.onresult = (event) => {
+      restartAttempts = 0; // successful result resets the counter
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript.toLowerCase().trim();
+        if (transcript.includes("start")) {
+          cancelled = true;
+          recognition.stop();
+          gs().ready();
+          startWithPermissionCheck();
+          return;
+        }
+      }
+    };
+
+    recognition.onend = () => {
+      if (cancelled || calibrationState !== "idle") return;
+      restartAttempts++;
+      if (restartAttempts > MAX_RESTARTS) return; // stop retrying to prevent crash
+      // Debounced restart — prevents rapid start/stop loops in Safari
+      setTimeout(() => {
+        if (!cancelled && recognitionRef.current === recognition) {
+          try { recognition.start(); } catch { /* already started or unavailable */ }
+        }
+      }, 300);
+    };
+
+    recognition.onerror = (e) => {
+      // Fatal errors — don't restart
+      if (e.error === "not-allowed" || e.error === "service-not-available") {
+        cancelled = true;
+      }
+    };
+
+    try { recognition.start(); } catch { /* unavailable */ }
+
+    return () => {
+      cancelled = true;
+      recognitionRef.current = null;
+      try { recognition.stop(); } catch { /* not started */ }
+    };
+  }, [calibrationState, startWithPermissionCheck]);
 
   // Handle incoming pose landmarks from the camera
   const handlePoseFrame = useCallback((landmarks) => {
@@ -974,10 +1026,8 @@ export default function SwingIQ() {
 
   // Calibration: wait for full body, then stand at address for 3 seconds
   const startCalibration = useCallback(() => {
-    setCameraActive(true);
-    calibrationFramesRef.current = [];
-    setCalibrationState("waiting"); // wait for full body visibility before countdown
-  }, []);
+    startWithPermissionCheck();
+  }, [startWithPermissionCheck]);
 
   const handleCameraReady = useCallback(() => {
     gs().ready();
@@ -1091,6 +1141,7 @@ export default function SwingIQ() {
     setCalibrationBaseline(null);
     setPoseDetected(false);
     setLiveAngles(null);
+    setCamPermission(null);
   }, []);
 
   // ── CV Bridge (external API) ─────────────────────────────
@@ -1119,15 +1170,6 @@ export default function SwingIQ() {
     return () => { delete window.swingIQ; };
   }, [calibrationState, clubType]);
 
-  // Demo simulate
-  const doSimulate = useCallback(() => {
-    const frames = simulateSwing(clubType, simSkill);
-    const result = analyzeSwing(frames, clubType);
-    setCurrentResult(result);
-    setSessions(prev => [result, ...prev].slice(0, 50));
-    setTab("analysis");
-  }, [clubType, simSkill]);
-
   // Compute averages for dashboard
   const avgScore = sessions.length ? Math.round(sessions.reduce((s, r) => s + r.overallScore, 0) / sessions.length) : 0;
   const bestScore = sessions.length ? Math.max(...sessions.map(r => r.overallScore)) : 0;
@@ -1135,12 +1177,10 @@ export default function SwingIQ() {
 
   // ── Tab Nav ─────────────────────────────────────────────
   const tabs = [
-    { id: "guide", label: "Guide", icon: "?" },
+    { id: "guide", label: "Guide", icon: "\u{1F4D6}" },
     { id: "dashboard", label: "Home", icon: "⬡" },
     { id: "analysis", label: "Analysis", icon: "◎" },
-    { id: "drills", label: "Drills", icon: "◆" },
     { id: "history", label: "History", icon: "☷" },
-    { id: "compare", label: "Compare", icon: "⧉" },
   ];
 
   return (
@@ -1211,8 +1251,8 @@ export default function SwingIQ() {
             },
             {
               num: "3",
-              title: "Start Camera & Calibrate",
-              desc: "Hit the green button on the Home tab. The app will turn on your camera and wait until it can see your body. A silhouette in the corner shows which parts are detected. Once your thighs, torso, and head are visible, a 3-second calibration starts automatically.",
+              title: "Start",
+              desc: "Hit the Start button on the Home tab. The app will turn on your camera and wait until it can see your body. A silhouette in the corner shows which parts are detected. Once your thighs, torso, and head are visible, a 3-second calibration starts automatically.",
               tip: "Just stand naturally and stay still for the 3-second countdown.",
             },
             {
@@ -1230,7 +1270,7 @@ export default function SwingIQ() {
             {
               num: "6",
               title: "Review Your Analysis",
-              desc: "You'll see an overall score (0-100), phase-by-phase breakdown, detected faults with explanations, and recommended drills. Tap any fault to see how to fix it.",
+              desc: "You'll see an overall score (0-100), phase-by-phase breakdown, and detected faults with explanations. Tap any fault to see how to fix it.",
               tip: null,
             },
           ].map((step) => (
@@ -1288,9 +1328,7 @@ export default function SwingIQ() {
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {[
                 { icon: "◎", name: "Analysis", desc: "Detailed breakdown of your last swing — scores, angles vs ideal, faults, and priority fixes." },
-                { icon: "◆", name: "Drills", desc: "Practice drills recommended based on your detected faults. Each has a duration and difficulty level." },
                 { icon: "☷", name: "History", desc: "All your recorded sessions. Tap any to view its full analysis." },
-                { icon: "⧉", name: "Compare", desc: "Side-by-side comparison of any two sessions to track improvement." },
               ].map((t) => (
                 <div key={t.name} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "6px 0" }}>
                   <span style={{ fontSize: 14, width: 20, textAlign: "center", color: C.accent }}>{t.icon}</span>
@@ -1312,48 +1350,44 @@ export default function SwingIQ() {
       {/* ═══ DASHBOARD ═══ */}
       {tab === "dashboard" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16, animation: "fadeUp .4s ease" }}>
-          {/* Club selector + Mode toggle */}
+          {/* Club selector */}
           <Card style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ fontFamily: F.body, fontSize: 13, color: C.text, fontWeight: 500 }}>Club:</span>
+            <span style={{ fontFamily: F.body, fontSize: 12, color: C.muted, fontWeight: 500 }}>Select Club</span>
+            <div style={{ display: "flex", gap: 8 }}>
               {["driver", "iron", "wedge"].map(c => (
-                <button key={c} onClick={() => setClubType(c)} style={{
-                  padding: "6px 16px", borderRadius: 8, border: `1px solid ${clubType === c ? C.accent + "50" : C.border}`,
+                <button key={c} onClick={() => { setClubType(c); gs().tick(); say(`${c} selected.`); }} style={{
+                  flex: 1, padding: "14px 8px", borderRadius: 10, border: `2px solid ${clubType === c ? C.accent : C.border}`,
                   background: clubType === c ? `${C.accent}14` : "transparent",
-                  color: clubType === c ? C.accent : C.muted,
-                  fontFamily: F.body, fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "all .2s", textTransform: "capitalize",
+                  color: clubType === c ? C.accent : C.text,
+                  fontFamily: F.body, fontSize: 14, fontWeight: 700, cursor: "pointer", textTransform: "capitalize",
                 }}>{c}</button>
               ))}
             </div>
 
-            {/* Mode toggle */}
-            <div style={{ display: "flex", gap: 4, background: C.surface, borderRadius: 10, padding: 3, border: `1px solid ${C.border}` }}>
-              {[{ id: true, label: "📷 Camera (CV)" }, { id: false, label: "🎯 Simulate" }].map(m => (
-                <button key={String(m.id)} onClick={() => setCvMode(m.id)} style={{
-                  flex: 1, padding: "8px 6px", borderRadius: 8, border: "none", cursor: "pointer",
-                  background: cvMode === m.id ? `${C.accent}14` : "transparent",
-                  color: cvMode === m.id ? C.accent : C.muted,
-                  fontFamily: F.body, fontSize: 12, fontWeight: 600, transition: "all .2s",
-                }}>{m.label}</button>
-              ))}
-            </div>
+          </Card>
 
-            {/* Camera mode */}
-            {cvMode && (
-              <>
-                {/* Handedness toggle */}
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontFamily: F.body, fontSize: 12, color: C.muted, fontWeight: 500 }}>Stance:</span>
-                  {[{ id: true, label: "Right-handed" }, { id: false, label: "Left-handed" }].map(h => (
-                    <button key={String(h.id)} onClick={() => setRightHanded(h.id)} style={{
-                      padding: "5px 12px", borderRadius: 7, border: `1px solid ${rightHanded === h.id ? C.accent + "50" : C.border}`,
-                      background: rightHanded === h.id ? `${C.accent}14` : "transparent",
-                      color: rightHanded === h.id ? C.accent : C.muted,
-                      fontFamily: F.body, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all .2s",
-                    }}>{h.label}</button>
-                  ))}
+          {/* Start button — voice activated */}
+          {calibrationState === "idle" && (
+            <button onClick={startCalibration} style={{ width: "100%", padding: "28px 20px", borderRadius: 16, border: "none", background: `linear-gradient(135deg, ${C.accent}, ${C.accentDark})`, color: C.bg, fontFamily: F.body, fontSize: 22, fontWeight: 700, cursor: "pointer", animation: "breathe 3s ease infinite", display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 36 }}>{"\u26F3"}</span>
+              Say START to begin
+              <span style={{ fontFamily: F.body, fontSize: 12, fontWeight: 500, opacity: .7 }}>Voice-guided swing analysis</span>
+            </button>
+          )}
+
+          {/* Camera + calibration flow — visible after start */}
+          {calibrationState !== "idle" && (
+            <Card style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* Camera denied — show retry button */}
+              {camPermission === false && (
+                <div style={{ padding: "40px 20px", textAlign: "center", background: C.surface, borderRadius: 14, border: `1px solid ${C.border}` }}>
+                  <span style={{ fontSize: 40, display: "block", marginBottom: 12 }}>{"\u{1F4F7}"}</span>
+                  <p style={{ fontFamily: F.body, fontSize: 14, color: C.text, fontWeight: 600, marginBottom: 6 }}>Camera permission declined</p>
+                  <p style={{ fontFamily: F.body, fontSize: 12, color: C.muted, marginBottom: 16, lineHeight: 1.5 }}>SwingIQ needs camera access to analyze your swing. Please allow access to continue.</p>
+                  <Btn onClick={requestCamPermission} style={{ padding: "12px 28px", fontSize: 14 }}>Allow Camera Access</Btn>
                 </div>
-
+              )}
+              {camPermission === true && (
                 <div style={{ position: "relative" }}>
                   <LiveCamera
                     isActive={cameraActive}
@@ -1361,159 +1395,118 @@ export default function SwingIQ() {
                     onReady={handleCameraReady}
                     onError={() => {}}
                   />
-                  {/* Body visibility silhouette overlay */}
                   {cameraActive && (calibrationState === "waiting" || calibrationState === "calibrating" || calibrationState === "ready") && (
                     <div style={{ position: "absolute", top: 10, right: 10, zIndex: 2 }}>
                       <BodyVisibilityIndicator visibility={bodyVisibility} />
                     </div>
                   )}
                 </div>
+              )}
 
-                {/* Waiting for full body visibility */}
-                {cameraActive && calibrationState === "waiting" && (
-                  <div style={{ padding: "16px 14px", background: `${C.gold}12`, borderRadius: 12, border: `1px solid ${C.gold}30`, textAlign: "center" }}>
-                    <p style={{ fontFamily: F.body, fontSize: 14, color: C.gold, fontWeight: 600 }}>
-                      Step into frame
-                    </p>
-                    <p style={{ fontFamily: F.body, fontSize: 12, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
-                      Make sure your full body is visible in the camera. The silhouette on the right shows which parts are detected.
-                    </p>
-                    <div style={{ display: "flex", justifyContent: "center", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-                      {[
-                        { key: "head", label: "Head" },
-                        { key: "torso", label: "Torso" },
-                        { key: "leftArm", label: "L Arm" },
-                        { key: "rightArm", label: "R Arm" },
-                        { key: "leftLeg", label: "L Leg" },
-                        { key: "rightLeg", label: "R Leg" },
-                      ].map(p => (
-                        <span key={p.key} style={{
-                          fontFamily: F.mono, fontSize: 10, fontWeight: 600,
-                          padding: "3px 8px", borderRadius: 6,
-                          color: bodyVisibility[p.key] ? C.accent : C.muted,
-                          background: bodyVisibility[p.key] ? `${C.accent}18` : `${C.muted}12`,
-                          border: `1px solid ${bodyVisibility[p.key] ? C.accent + "40" : C.muted + "20"}`,
-                          transition: "all .3s",
-                        }}>{bodyVisibility[p.key] ? "✓" : "✗"} {p.label}</span>
-                      ))}
-                    </div>
+              {/* Waiting for full body visibility */}
+              {cameraActive && calibrationState === "waiting" && (
+                <div style={{ padding: "16px 14px", background: `${C.gold}12`, borderRadius: 12, border: `1px solid ${C.gold}30`, textAlign: "center" }}>
+                  <p style={{ fontFamily: F.body, fontSize: 14, color: C.gold, fontWeight: 600 }}>Step into frame</p>
+                  <p style={{ fontFamily: F.body, fontSize: 12, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>Make sure your full body is visible. The silhouette shows which parts are detected.</p>
+                  <div style={{ display: "flex", justifyContent: "center", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+                    {[
+                      { key: "head", label: "Head" }, { key: "torso", label: "Torso" },
+                      { key: "leftArm", label: "L Arm" }, { key: "rightArm", label: "R Arm" },
+                      { key: "leftLeg", label: "L Leg" }, { key: "rightLeg", label: "R Leg" },
+                    ].map(p => (
+                      <span key={p.key} style={{
+                        fontFamily: F.mono, fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6,
+                        color: bodyVisibility[p.key] ? C.accent : C.muted,
+                        background: bodyVisibility[p.key] ? `${C.accent}18` : `${C.muted}12`,
+                        border: `1px solid ${bodyVisibility[p.key] ? C.accent + "40" : C.muted + "20"}`,
+                        transition: "all .3s",
+                      }}>{bodyVisibility[p.key] ? "\u2713" : "\u2717"} {p.label}</span>
+                    ))}
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* Calibration overlay on camera */}
-                {cameraActive && calibrationState === "calibrating" && (
-                  <div style={{ padding: "16px 14px", background: `${C.blue}12`, borderRadius: 12, border: `1px solid ${C.blue}30`, textAlign: "center" }}>
-                    <div style={{ fontFamily: F.display, fontSize: 48, fontWeight: 700, color: C.blue, animation: "scalePop .4s ease" }}>{calibrationCountdown}</div>
-                    <p style={{ fontFamily: F.body, fontSize: 13, color: C.blue, fontWeight: 500, marginTop: 4 }}>
-                      Stand still — calibrating...
-                    </p>
-                    {!poseDetected && (
-                      <p style={{ fontFamily: F.body, fontSize: 11, color: C.red, marginTop: 6 }}>⚠ Full body not detected — step back or adjust camera</p>
-                    )}
-                  </div>
-                )}
+              {/* Calibrating countdown */}
+              {cameraActive && calibrationState === "calibrating" && (
+                <div style={{ padding: "16px 14px", background: `${C.blue}12`, borderRadius: 12, border: `1px solid ${C.blue}30`, textAlign: "center" }}>
+                  <div style={{ fontFamily: F.display, fontSize: 48, fontWeight: 700, color: C.blue, animation: "scalePop .4s ease" }}>{calibrationCountdown}</div>
+                  <p style={{ fontFamily: F.body, fontSize: 13, color: C.blue, fontWeight: 500, marginTop: 4 }}>Stand still — calibrating...</p>
+                  {!poseDetected && (
+                    <p style={{ fontFamily: F.body, fontSize: 11, color: C.red, marginTop: 6 }}>Full body not detected — step back or adjust camera</p>
+                  )}
+                </div>
+              )}
 
-                {/* Calibration complete — baseline captured */}
-                {(calibrationState === "ready" || calibrationState === "recording") && calibrationBaseline && (
-                  <div style={{ padding: "10px 14px", background: `${C.accent}08`, borderRadius: 10, border: `1px solid ${C.accent}20`, display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 18 }}>✓</span>
-                    <div>
-                      <span style={{ fontFamily: F.body, fontSize: 12, color: C.accent, fontWeight: 600 }}>Calibrated</span>
-                      <span style={{ fontFamily: F.mono, fontSize: 10, color: C.muted, marginLeft: 8 }}>
-                        Spine {Math.round(calibrationBaseline.spineAngle)}° · Knee {Math.round(calibrationBaseline.kneeFlexion)}°
-                      </span>
-                    </div>
+              {/* Calibration baseline */}
+              {(calibrationState === "ready" || calibrationState === "recording") && calibrationBaseline && (
+                <div style={{ padding: "10px 14px", background: `${C.accent}08`, borderRadius: 10, border: `1px solid ${C.accent}20`, display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 18 }}>{"\u2713"}</span>
+                  <div>
+                    <span style={{ fontFamily: F.body, fontSize: 12, color: C.accent, fontWeight: 600 }}>Calibrated</span>
+                    <span style={{ fontFamily: F.mono, fontSize: 10, color: C.muted, marginLeft: 8 }}>
+                      Spine {Math.round(calibrationBaseline.spineAngle)}{"\u00B0"} {"\u00B7"} Knee {Math.round(calibrationBaseline.kneeFlexion)}{"\u00B0"}
+                    </span>
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* Live phase + angles HUD */}
-                {cameraActive && liveAngles && calibrationState !== "calibrating" && calibrationState !== "waiting" && (
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.surface, borderRadius: 10, border: `1px solid ${C.border}` }}>
-                    <div>
-                      <span style={{ fontFamily: F.body, fontSize: 10, color: C.muted, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase" }}>Phase</span>
-                      <div style={{ fontFamily: F.display, fontSize: 18, fontWeight: 700, color: C.accent }}>{PHASE_LABELS[livePhase]}</div>
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      {[
-                        { label: "Spine", val: liveAngles.spineAngle },
-                        { label: "Elbow", val: liveAngles.elbowAngle },
-                        { label: "Hip", val: liveAngles.hipRotation },
-                        { label: "Knee", val: liveAngles.kneeFlexion },
-                      ].map(a => (
-                        <div key={a.label} style={{ textAlign: "center" }}>
-                          <span style={{ fontFamily: F.mono, fontSize: 14, color: C.white, fontWeight: 600 }}>{Math.round(a.val)}°</span>
-                          <div style={{ fontFamily: F.body, fontSize: 9, color: C.muted }}>{a.label}</div>
-                        </div>
-                      ))}
-                    </div>
+              {/* Live phase + angles HUD */}
+              {cameraActive && liveAngles && calibrationState !== "calibrating" && calibrationState !== "waiting" && (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.surface, borderRadius: 10, border: `1px solid ${C.border}` }}>
+                  <div>
+                    <span style={{ fontFamily: F.body, fontSize: 10, color: C.muted, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase" }}>Phase</span>
+                    <div style={{ fontFamily: F.display, fontSize: 18, fontWeight: 700, color: C.accent }}>{PHASE_LABELS[livePhase]}</div>
                   </div>
-                )}
-
-                {/* Action buttons based on state */}
-                {calibrationState === "idle" && (
-                  <Btn onClick={startCalibration} style={{ width: "100%" }}>
-                    📷 Start Camera &amp; Calibrate
-                  </Btn>
-                )}
-                {calibrationState === "waiting" && (
-                  <Btn onClick={cancelCamera} variant="secondary" style={{ width: "100%" }}>
-                    ✕ Cancel
-                  </Btn>
-                )}
-                {calibrationState === "ready" && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <div style={{ padding: "14px", background: `${C.accent}10`, borderRadius: 12, border: `1px solid ${C.accent}25`, textAlign: "center" }}>
-                      <div style={{ fontFamily: F.display, fontSize: 36, fontWeight: 700, color: C.accent, animation: "scalePop .4s ease" }}>{recordCountdown}</div>
-                      <p style={{ fontFamily: F.body, fontSize: 13, color: C.accent, fontWeight: 500, marginTop: 2 }}>
-                        Get into your stance — recording starts automatically
-                      </p>
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <Btn onClick={startRecording} style={{ flex: 1 }}>
-                        ● Start Now
-                      </Btn>
-                      <Btn onClick={cancelCamera} variant="secondary" style={{ padding: "10px 14px" }}>
-                        ✕
-                      </Btn>
-                    </div>
-                  </div>
-                )}
-                {calibrationState === "recording" && (
                   <div style={{ display: "flex", gap: 8 }}>
-                    <Btn onClick={finishRecording} variant="danger" style={{ flex: 1 }}>
-                      ■ Stop &amp; Analyze
-                    </Btn>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 12px", background: `${C.red}12`, borderRadius: 10, border: `1px solid ${C.red}25` }}>
-                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.red, animation: "pulse 1s infinite" }} />
-                      <span style={{ fontFamily: F.mono, fontSize: 11, color: C.red }}>{framesRef.current.length} frames</span>
-                    </div>
+                    {[
+                      { label: "Spine", val: liveAngles.spineAngle },
+                      { label: "Elbow", val: liveAngles.elbowAngle },
+                      { label: "Hip", val: liveAngles.hipRotation },
+                      { label: "Knee", val: liveAngles.kneeFlexion },
+                    ].map(a => (
+                      <div key={a.label} style={{ textAlign: "center" }}>
+                        <span style={{ fontFamily: F.mono, fontSize: 14, color: C.white, fontWeight: 600 }}>{Math.round(a.val)}{"\u00B0"}</span>
+                        <div style={{ fontFamily: F.body, fontSize: 9, color: C.muted }}>{a.label}</div>
+                      </div>
+                    ))}
                   </div>
-                )}
-
-                {/* Setup guidance */}
-                <div style={{ padding: "10px 12px", background: C.surface, borderRadius: 8, border: `1px solid ${C.border}` }}>
-                  <p style={{ fontFamily: F.body, fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
-                    <strong style={{ color: C.text }}>Camera setup:</strong> Position camera at hip height, 8–10 ft away, ideally down-the-line (side view). Ensure your full body is visible with good lighting. The app will calibrate your address position first, then record your swing.
-                  </p>
                 </div>
-              </>
-            )}
+              )}
 
-            {/* Simulate mode */}
-            {!cvMode && (
-              <>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontFamily: F.body, fontSize: 12, color: C.muted }}>Sim skill:</span>
-                  <input type="range" min="0.3" max="0.95" step="0.01" value={simSkill} onChange={e => setSimSkill(+e.target.value)}
-                    style={{ flex: 1, accentColor: C.accent, height: 4 }} />
-                  <span style={{ fontFamily: F.mono, fontSize: 11, color: C.text, width: 36 }}>{Math.round(simSkill * 100)}%</span>
+              {/* Action buttons */}
+              {calibrationState === "waiting" && (
+                <Btn onClick={cancelCamera} variant="secondary" style={{ width: "100%" }}>{"\u2715"} Cancel</Btn>
+              )}
+              {calibrationState === "ready" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ padding: "14px", background: `${C.accent}10`, borderRadius: 12, border: `1px solid ${C.accent}25`, textAlign: "center" }}>
+                    <div style={{ fontFamily: F.display, fontSize: 36, fontWeight: 700, color: C.accent, animation: "scalePop .4s ease" }}>{recordCountdown}</div>
+                    <p style={{ fontFamily: F.body, fontSize: 13, color: C.accent, fontWeight: 500, marginTop: 2 }}>Get into your stance — recording starts automatically</p>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Btn onClick={startRecording} style={{ flex: 1 }}>{"\u25CF"} Start Now</Btn>
+                    <Btn onClick={cancelCamera} variant="secondary" style={{ padding: "10px 14px" }}>{"\u2715"}</Btn>
+                  </div>
                 </div>
-                <Btn onClick={doSimulate} style={{ width: "100%" }}>
-                  ◉ Simulate Swing
-                </Btn>
-              </>
-            )}
-          </Card>
+              )}
+              {calibrationState === "recording" && (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Btn onClick={finishRecording} variant="danger" style={{ flex: 1 }}>{"\u25A0"} Stop &amp; Analyze</Btn>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 12px", background: `${C.red}12`, borderRadius: 10, border: `1px solid ${C.red}25` }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.red, animation: "pulse 1s infinite" }} />
+                    <span style={{ fontFamily: F.mono, fontSize: 11, color: C.red }}>{framesRef.current.length} frames</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Setup guidance */}
+              <div style={{ padding: "10px 12px", background: C.surface, borderRadius: 8, border: `1px solid ${C.border}` }}>
+                <p style={{ fontFamily: F.body, fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
+                  <strong style={{ color: C.text }}>Camera setup:</strong> Position camera at hip height, 8-10 ft away, side view. Ensure your full body is visible with good lighting.
+                </p>
+              </div>
+            </Card>
+          )}
 
           {/* Stats */}
           {sessions.length > 0 && (
@@ -1578,7 +1571,7 @@ export default function SwingIQ() {
             <Card style={{ textAlign: "center", padding: 40 }}>
               <div style={{ fontSize: 40, marginBottom: 12, animation: "bounce 2s ease infinite" }}>🏌️</div>
               <p style={{ fontFamily: F.body, fontSize: 14, color: C.text, fontWeight: 500 }}>No swings yet</p>
-              <p style={{ fontFamily: F.body, fontSize: 12, color: C.muted, marginTop: 6 }}>Hit "Simulate Swing" to demo, or connect your CV module</p>
+              <p style={{ fontFamily: F.body, fontSize: 12, color: C.muted, marginTop: 6 }}>Tap Start to begin your first swing session</p>
             </Card>
           )}
         </div>
@@ -1663,7 +1656,7 @@ export default function SwingIQ() {
                     <p style={{ fontFamily: F.body, fontSize: 12, color: C.text, lineHeight: 1.5 }}>{f.fix}</p>
                     <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                       {f.vf && <button onClick={() => say(f.vf, true)} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontFamily: F.body, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{"\u{1F50A}"} Hear Fix</button>}
-                      {f.drill && <button onClick={() => { setActiveDrill(f.drill); setTab("drills"); playDrill(f.drill); }} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.accent}30`, background: `${C.accent}10`, color: C.accent, fontFamily: F.body, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{"\u25C6"} Start Drill</button>}
+                      {f.drill && <button onClick={() => { playDrill(f.drill); }} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.accent}30`, background: `${C.accent}10`, color: C.accent, fontFamily: F.body, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{"\u{1F50A}"} Play Drill</button>}
                     </div>
                   </div>
                 ))}
@@ -1687,63 +1680,6 @@ export default function SwingIQ() {
           <p style={{ fontFamily: F.body, fontSize: 14, color: C.text }}>No swing analyzed yet.</p>
           <Btn onClick={() => setTab("dashboard")} variant="secondary" style={{ marginTop: 12 }}>Go to Home</Btn>
         </Card>
-      )}
-
-      {/* ═══ DRILLS ═══ */}
-      {tab === "drills" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14, animation: "fadeUp .4s ease" }}>
-          {/* Active drill player */}
-          {activeDrill && DRILLS[activeDrill] && (
-            <Card style={{ border: `1px solid ${C.accent}30`, boxShadow: `0 0 24px ${C.accentGlow}` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <span style={{ fontFamily: F.body, fontSize: 10, color: C.accent, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase" }}>Now Playing</span>
-                <button onClick={() => { gv().stop(); setActiveDrill(null); }} style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontFamily: F.body, fontSize: 10, cursor: "pointer" }}>Stop</button>
-              </div>
-              <span style={{ fontFamily: F.body, fontSize: 18, color: C.white, fontWeight: 700, display: "block", marginBottom: 6 }}>{activeDrill}</span>
-              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}><Badge text={DRILLS[activeDrill].duration} small color={C.cyan} /><Badge text={DRILLS[activeDrill].level} small color={C.gold} /></div>
-              <Wave on={true} />
-              <p style={{ fontFamily: F.body, fontSize: 13, color: C.text, lineHeight: 1.6, marginTop: 10 }}>{DRILLS[activeDrill].desc}</p>
-              <button onClick={() => playDrill(activeDrill)} style={{ marginTop: 12, width: "100%", padding: "10px", borderRadius: 8, border: `1px solid ${C.accent}30`, background: `${C.accent}10`, color: C.accent, fontFamily: F.body, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>{"\u{1F50A}"} Replay Voice Guide</button>
-            </Card>
-          )}
-
-          {currentResult?.recommendedDrills?.length > 0 && <span style={{ fontFamily: F.body, fontSize: 13, fontWeight: 700, color: C.white }}>Recommended</span>}
-          {currentResult?.recommendedDrills?.map((drillName, i) => {
-            const d = DRILLS[drillName];
-            if (!d) return null;
-            return (
-              <Card key={i}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <span style={{ fontFamily: F.body, fontSize: 14, color: C.white, fontWeight: 600 }}>{drillName}</span>
-                    <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                      <Badge text={d.duration} small color={C.cyan} />
-                      <Badge text={d.level} small color={d.level === "Advanced" ? C.gold : d.level === "Intermediate" ? C.accent : C.text} />
-                    </div>
-                  </div>
-                  <button onClick={() => playDrill(drillName)} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: C.accent, color: C.bg, fontFamily: F.body, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{"\u{1F50A}"} Start</button>
-                </div>
-              </Card>
-            );
-          })}
-
-          <span style={{ fontFamily: F.body, fontSize: 13, fontWeight: 700, color: C.white, marginTop: 8 }}>All Drills</span>
-          {Object.entries(DRILLS).map(([name, d]) => (
-            <Card key={name}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ flex: 1 }}>
-                  <span style={{ fontFamily: F.body, fontSize: 14, color: C.white, fontWeight: 600 }}>{name}</span>
-                  <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                    <Badge text={d.duration} small color={C.cyan} />
-                    <Badge text={d.level} small color={d.level === "Advanced" ? C.gold : d.level === "Intermediate" ? C.accent : C.text} />
-                  </div>
-                  <p style={{ fontFamily: F.body, fontSize: 12, color: C.muted, marginTop: 6, lineHeight: 1.4 }}>{d.desc}</p>
-                </div>
-                <button onClick={() => playDrill(name)} style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.borderMid}`, background: C.card, color: C.accent, fontFamily: F.body, fontSize: 11, fontWeight: 700, cursor: "pointer", flexShrink: 0, marginLeft: 10 }}>{"\u{1F50A}"}</button>
-              </div>
-            </Card>
-          ))}
-        </div>
       )}
 
       {/* ═══ HISTORY ═══ */}
@@ -1785,94 +1721,6 @@ export default function SwingIQ() {
               </Card>
             );
           })}
-        </div>
-      )}
-
-      {/* ═══ COMPARE ═══ */}
-      {tab === "compare" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14, animation: "fadeUp .4s ease" }}>
-          {sessions.length < 2 ? (
-            <Card style={{ textAlign: "center", padding: 32 }}>
-              <p style={{ fontFamily: F.body, fontSize: 13, color: C.muted }}>Need at least 2 sessions to compare</p>
-              <Btn onClick={() => setTab("dashboard")} variant="secondary" style={{ marginTop: 12 }}>Record Swings</Btn>
-            </Card>
-          ) : (
-            <>
-              <div style={{ display: "flex", gap: 10 }}>
-                {[0, 1].map(slot => (
-                  <div key={slot} style={{ flex: 1 }}>
-                    <span style={{ fontFamily: F.body, fontSize: 11, color: C.muted, fontWeight: 500, marginBottom: 4, display: "block" }}>Swing {slot === 0 ? "A" : "B"}</span>
-                    <select value={compareIdx[slot]} onChange={e => { const n = [...compareIdx]; n[slot] = +e.target.value; setCompareIdx(n); }}
-                      style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.card, color: C.white, fontFamily: F.mono, fontSize: 11 }}>
-                      {sessions.map((s, i) => (
-                        <option key={i} value={i}>#{i+1} — {s.overallScore} ({s.clubType})</option>
-                      ))}
-                    </select>
-                  </div>
-                ))}
-              </div>
-
-              {/* Side by side scores */}
-              <div style={{ display: "flex", gap: 12 }}>
-                {[0, 1].map(slot => {
-                  const s = sessions[compareIdx[slot]];
-                  if (!s) return null;
-                  return (
-                    <Card key={slot} style={{ flex: 1, textAlign: "center", padding: 16 }}>
-                      <ScoreRing score={s.overallScore} size={90} stroke={7} label={`Swing ${slot === 0 ? "A" : "B"}`} delay={slot * 200} />
-                    </Card>
-                  );
-                })}
-              </div>
-
-              {/* Phase comparison */}
-              <Card>
-                <span style={{ fontFamily: F.body, fontSize: 13, fontWeight: 700, color: C.white, display: "block", marginBottom: 12 }}>Phase Comparison</span>
-                {PHASE_ORDER.map(ph => {
-                  const a = sessions[compareIdx[0]]?.phaseScores[ph];
-                  const b = sessions[compareIdx[1]]?.phaseScores[ph];
-                  if (a == null && b == null) return null;
-                  const colorA = (a || 0) >= 85 ? C.accent : (a || 0) >= 70 ? C.gold : C.red;
-                  const colorB = (b || 0) >= 85 ? C.accent : (b || 0) >= 70 ? C.gold : C.red;
-                  return (
-                    <div key={ph} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <span style={{ fontFamily: F.body, fontSize: 11, color: C.text, width: 75, textAlign: "right", fontWeight: 500 }}>{PHASE_LABELS[ph]}</span>
-                      <span style={{ fontFamily: F.mono, fontSize: 11, color: colorA, width: 24 }}>{a ?? "—"}</span>
-                      <div style={{ flex: 1, display: "flex", height: 6, borderRadius: 3, overflow: "hidden", background: C.border }}>
-                        <div style={{ width: `${a || 0}%`, background: `${colorA}80`, transition: "width .5s" }} />
-                      </div>
-                      <div style={{ flex: 1, display: "flex", height: 6, borderRadius: 3, overflow: "hidden", background: C.border }}>
-                        <div style={{ width: `${b || 0}%`, background: `${colorB}80`, transition: "width .5s" }} />
-                      </div>
-                      <span style={{ fontFamily: F.mono, fontSize: 11, color: colorB, width: 24 }}>{b ?? "—"}</span>
-                    </div>
-                  );
-                })}
-              </Card>
-
-              {/* Fault diff */}
-              <Card>
-                <span style={{ fontFamily: F.body, fontSize: 13, fontWeight: 700, color: C.white, display: "block", marginBottom: 10 }}>Issues Comparison</span>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  {[0, 1].map(slot => {
-                    const s = sessions[compareIdx[slot]];
-                    return (
-                      <div key={slot}>
-                        <span style={{ fontFamily: F.body, fontSize: 11, color: C.muted, fontWeight: 600, marginBottom: 6, display: "block" }}>Swing {slot === 0 ? "A" : "B"}</span>
-                        {(s?.faults || []).map((f, j) => (
-                          <div key={j} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                            <SeverityDot severity={f.severity} />
-                            <span style={{ fontFamily: F.body, fontSize: 11, color: C.text }}>{f.name}</span>
-                          </div>
-                        ))}
-                        {(!s?.faults?.length) && <span style={{ fontFamily: F.body, fontSize: 11, color: C.accent }}>No issues!</span>}
-                      </div>
-                    );
-                  })}
-                </div>
-              </Card>
-            </>
-          )}
         </div>
       )}
 
