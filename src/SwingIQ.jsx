@@ -151,6 +151,7 @@ const DRILLS = {
 class Voice {
   constructor() {
     this.s = window.speechSynthesis; this.q = []; this.busy = false; this.on = true; this.v = null;
+    this.unlocked = false; this._keepAlive = null;
     const p = () => {
       const vs = this.s.getVoices();
       this.v = vs.find(x => x.name.includes("Samantha"))
@@ -159,6 +160,25 @@ class Voice {
         || vs.find(x => x.lang.startsWith("en")) || vs[0];
     };
     p(); if (this.s.onvoiceschanged !== undefined) this.s.onvoiceschanged = p;
+  }
+  // iOS requires first speak() from a user gesture — call this from a tap/click handler
+  // force = true allows re-unlocking (used for iOS touch fallback after non-gesture attempt)
+  unlock(force = false) {
+    if (this.unlocked && !force) return;
+    this.unlocked = true;
+    // iOS ignores empty strings and volume=0 — use a real word at low volume
+    this.s.cancel();
+    const u = new SpeechSynthesisUtterance(".");
+    u.volume = 0.01;
+    u.rate = 2;
+    if (this.v) u.voice = this.v;
+    this.s.speak(u);
+    // iOS pauses speechSynthesis after ~15s — keep-alive timer resumes it
+    if (!this._keepAlive) {
+      this._keepAlive = setInterval(() => {
+        this.s.resume();
+      }, 5000);
+    }
   }
   say(t, pri = false) {
     if (!this.on || !t) return;
@@ -876,7 +896,7 @@ export default function SwingIQ() {
   const [livePhase, setLivePhase] = useState("setup");
   const [liveAngles, setLiveAngles] = useState(null);
   const [rightHanded, setRightHanded] = useState(true);
-  const [calibrationState, setCalibrationState] = useState("idle"); // idle | waiting | calibrating | ready | recording
+  const [calibrationState, setCalibrationState] = useState("idle"); // idle | waiting | calibrating | ready | recording | feedback
   const [calibrationCountdown, setCalibrationCountdown] = useState(0);
   const [calibrationBaseline, setCalibrationBaseline] = useState(null);
   const [poseDetected, setPoseDetected] = useState(false);
@@ -890,22 +910,13 @@ export default function SwingIQ() {
   const [vOn, setVO] = useState(true);
   const [sOn, setSO] = useState(true);
   const [camPermission, setCamPermission] = useState(null); // null = not asked, true = granted, false = denied
-  const recognitionRef = useRef(null);
+  const feedbackTimers = useRef([]);
 
   const say = useCallback((t, pri = false) => { setSpoken(t); gv().say(t, pri); }, []);
   const playDrill = useCallback((n) => { const d = DRILLS[n]; if (!d) return; gs().ready(); say(d.vg, true); }, [say]);
 
-  // Check if camera permission is already granted (cached by browser)
-  const checkCachedPermission = useCallback(async () => {
-    try {
-      const result = await navigator.permissions.query({ name: "camera" });
-      return result.state; // "granted", "denied", or "prompt"
-    } catch {
-      return "prompt"; // permissions API not supported
-    }
-  }, []);
-
-  // Request camera permission explicitly (retry button)
+  // Request camera permission — always try getUserMedia directly
+  // (Permissions API is unreliable on iOS Safari — returns "denied" when never asked)
   const requestCamPermission = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
@@ -913,93 +924,25 @@ export default function SwingIQ() {
       setCamPermission(true);
       setCameraActive(true);
     } catch {
+      setCamPermission(false);
       say("Camera permission was denied. Please allow camera access in your browser settings.", true);
     }
   }, [say]);
 
-  // Start flow — use cached permission if available, otherwise prompt
+  // Start flow — always trigger getUserMedia to let browser prompt
   const startWithPermissionCheck = useCallback(async () => {
     setCalibrationState("waiting");
     calibrationFramesRef.current = [];
-    const state = await checkCachedPermission();
-    if (state === "granted") {
-      // Already granted — skip getUserMedia probe, go straight to camera
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      stream.getTracks().forEach(t => t.stop());
       setCamPermission(true);
       setCameraActive(true);
-    } else if (state === "denied") {
-      // Previously denied — show retry button
+    } catch {
       setCamPermission(false);
-      say("Camera permission was previously denied. Tap the button to allow access.", true);
-    } else {
-      // "prompt" — trigger browser permission popup
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        stream.getTracks().forEach(t => t.stop());
-        setCamPermission(true);
-        setCameraActive(true);
-      } catch {
-        setCamPermission(false);
-        say("Camera permission was declined. Tap the button to try again.", true);
-      }
+      say("Camera permission was declined. Tap the button to try again.", true);
     }
-  }, [say, checkCachedPermission]);
-
-  // Web Speech Recognition — listen for "start"
-  useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition || calibrationState !== "idle") return;
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = false; // Safari crashes with continuous:true — use manual restart
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognitionRef.current = recognition;
-
-    let cancelled = false;
-    let restartAttempts = 0;
-    const MAX_RESTARTS = 50;
-
-    recognition.onresult = (event) => {
-      restartAttempts = 0; // successful result resets the counter
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript.toLowerCase().trim();
-        if (transcript.includes("start")) {
-          cancelled = true;
-          recognition.stop();
-          gs().ready();
-          startWithPermissionCheck();
-          return;
-        }
-      }
-    };
-
-    recognition.onend = () => {
-      if (cancelled || calibrationState !== "idle") return;
-      restartAttempts++;
-      if (restartAttempts > MAX_RESTARTS) return; // stop retrying to prevent crash
-      // Debounced restart — prevents rapid start/stop loops in Safari
-      setTimeout(() => {
-        if (!cancelled && recognitionRef.current === recognition) {
-          try { recognition.start(); } catch { /* already started or unavailable */ }
-        }
-      }, 300);
-    };
-
-    recognition.onerror = (e) => {
-      // Fatal errors — don't restart
-      if (e.error === "not-allowed" || e.error === "service-not-available") {
-        cancelled = true;
-      }
-    };
-
-    try { recognition.start(); } catch { /* unavailable */ }
-
-    return () => {
-      cancelled = true;
-      recognitionRef.current = null;
-      try { recognition.stop(); } catch { /* not started */ }
-    };
-  }, [calibrationState, startWithPermissionCheck]);
+  }, [say]);
 
   // Handle incoming pose landmarks from the camera
   const handlePoseFrame = useCallback((landmarks) => {
@@ -1047,6 +990,18 @@ export default function SwingIQ() {
 
   // Calibration: wait for full body, then stand at address for 3 seconds
   const startCalibration = useCallback(() => {
+    // Cancel any in-progress TTS and pending feedback timeouts
+    gv().stop();
+    feedbackTimers.current.forEach(t => clearTimeout(t));
+    feedbackTimers.current = [];
+    // Reset stale pose state so calibration waits for fresh detection
+    setPoseDetected(false);
+    setBodyVisibility({ head: false, torso: false, leftArm: false, rightArm: false, leftLeg: false, rightLeg: false });
+    setLiveAngles(null);
+    setTab("dashboard");
+    gs()._e();
+    gv().unlock();
+    gs().ready();
     startWithPermissionCheck();
   }, [startWithPermissionCheck]);
 
@@ -1056,12 +1011,25 @@ export default function SwingIQ() {
   }, [clubType, say]);
 
   // Auto-transition: waiting → calibrating once full body is visible
+  // Delay detection so the TTS prompt can finish before we start checking visibility
+  const [detectReady, setDetectReady] = useState(false);
   useEffect(() => {
-    if (calibrationState !== "waiting" || !poseDetected) return;
+    if (calibrationState !== "waiting") { setDetectReady(false); return; }
+    // Reset pose state when entering waiting — clear stale data from previous session
+    setPoseDetected(false);
+    setBodyVisibility({ head: false, torso: false, leftArm: false, rightArm: false, leftLeg: false, rightLeg: false });
+    setLiveAngles(null);
+    setDetectReady(false);
+    const timer = setTimeout(() => setDetectReady(true), 5000);
+    return () => clearTimeout(timer);
+  }, [calibrationState]);
+
+  useEffect(() => {
+    if (calibrationState !== "waiting" || !poseDetected || !detectReady) return;
     calibrationFramesRef.current = [];
     setCalibrationCountdown(3);
     setCalibrationState("calibrating");
-  }, [calibrationState, poseDetected]);
+  }, [calibrationState, poseDetected, detectReady]);
 
   // Run the countdown timer when calibrating
   useEffect(() => {
@@ -1135,22 +1103,29 @@ export default function SwingIQ() {
     setSessions(prev => [result, ...prev].slice(0, 50));
     setTab("analysis");
     setCameraActive(false);
-    setCalibrationState("idle");
+    // Stay in "feedback" state — mic stays OFF while TTS plays results
+    setCalibrationState("feedback");
 
     const grade = result.overallScore >= 85 ? "Excellent" : result.overallScore >= 75 ? "Good" : result.overallScore >= 60 ? "Needs work" : "Let's improve this";
     if (result.overallScore >= 85) gs().great();
     else if (result.overallScore >= 70) gs().good();
     else gs().alert();
 
-    setTimeout(() => say(`Score: ${result.overallScore}. ${grade}.`), 500);
+    const t = feedbackTimers.current = [];
+    t.push(setTimeout(() => say(`Score: ${result.overallScore}. ${grade}.`), 500));
     if (result.faults.length > 0) {
-      setTimeout(() => say(result.faults[0].vf), 3500);
+      t.push(setTimeout(() => say(result.faults[0].vf), 3500));
     } else {
-      setTimeout(() => say("Clean swing. No major faults detected."), 3500);
+      t.push(setTimeout(() => say("Clean swing. No major faults detected."), 3500));
     }
     if (result.tempo && result.tempo !== "—") {
-      setTimeout(() => say(`Tempo was ${result.tempo}.`), 6500);
+      t.push(setTimeout(() => say(`Tempo was ${result.tempo}.`), 6500));
     }
+    // After all feedback, prompt restart
+    t.push(setTimeout(() => {
+      say("Tap Swing Again to record another swing.");
+      t.push(setTimeout(() => setCalibrationState("idle"), 4000));
+    }, 9000));
 
     if (window.swingIQ?.onAnalysisComplete) window.swingIQ.onAnalysisComplete(result);
   }, [clubType, say]);
@@ -1371,8 +1346,8 @@ export default function SwingIQ() {
       {/* ═══ DASHBOARD ═══ */}
       {tab === "dashboard" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16, animation: "fadeUp .4s ease" }}>
-          {/* Club selector */}
-          <Card style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Club selector — hidden during camera/calibration flow */}
+          {(calibrationState === "idle" || calibrationState === "feedback") && <Card style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <span style={{ fontFamily: F.body, fontSize: 12, color: C.muted, fontWeight: 500 }}>Select Club</span>
             <div style={{ display: "flex", gap: 8 }}>
               {["driver", "iron", "wedge"].map(c => (
@@ -1385,19 +1360,27 @@ export default function SwingIQ() {
               ))}
             </div>
 
-          </Card>
+          </Card>}
 
-          {/* Start button — voice activated */}
+          {/* Start / Restart button */}
           {calibrationState === "idle" && (
             <button onClick={startCalibration} style={{ width: "100%", padding: "28px 20px", borderRadius: 16, border: "none", background: `linear-gradient(135deg, ${C.accent}, ${C.accentDark})`, color: C.bg, fontFamily: F.body, fontSize: 22, fontWeight: 700, cursor: "pointer", animation: "breathe 3s ease infinite", display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
               <span style={{ fontSize: 36 }}>{"\u26F3"}</span>
-              Say START to begin
+              {sessions.length > 0 ? "Tap to swing again" : "Tap to begin"}
               <span style={{ fontFamily: F.body, fontSize: 12, fontWeight: 500, opacity: .7 }}>Voice-guided swing analysis</span>
             </button>
           )}
 
+          {/* Feedback state — waiting for TTS to finish */}
+          {calibrationState === "feedback" && (
+            <Card style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: 24 }}>
+              <span style={{ fontSize: 28 }}>🔊</span>
+              <span style={{ fontFamily: F.body, fontSize: 16, color: C.text }}>Playing feedback...</span>
+            </Card>
+          )}
+
           {/* Camera + calibration flow — visible after start */}
-          {calibrationState !== "idle" && (
+          {calibrationState !== "idle" && calibrationState !== "feedback" && (
             <Card style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {/* Camera denied — show retry button */}
               {camPermission === false && (
@@ -1601,6 +1584,10 @@ export default function SwingIQ() {
       {/* ═══ ANALYSIS ═══ */}
       {tab === "analysis" && currentResult && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16, animation: "fadeUp .4s ease" }}>
+          {/* Swing Again button */}
+          <button onClick={startCalibration} style={{ width: "100%", padding: "16px 20px", borderRadius: 14, border: "none", background: `linear-gradient(135deg, ${C.accent}, ${C.accentDark})`, color: C.bg, fontFamily: F.body, fontSize: 18, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+            <span style={{ fontSize: 24 }}>{"\u26F3"}</span> Swing Again
+          </button>
           {/* Hero Score */}
           <Card glow style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "28px 22px", background: `linear-gradient(170deg, ${C.card} 0%, ${C.surface} 100%)` }}>
             <div style={{ fontFamily: F.body, fontSize: 11, color: C.muted, fontWeight: 500, letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>Swing Score</div>
